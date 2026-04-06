@@ -1,6 +1,6 @@
 {
   "name": "claude-rename",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Auto-name Claude Code sessions with AI-powered descriptive titles",
   "type": "module",
   "scripts": {

@@ -180,7 +180,7 @@ async function nameSessionAI(sessionId, jsonlPath) {
   }
 }
 
-function getConfigModel() {
+export function getConfigModel() {
   try {
     const configPath = join(homedir(), ".claude-rename.json");
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
