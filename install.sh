@@ -4,8 +4,18 @@
 
 set -euo pipefail
 
-HOOK_URL="https://raw.githubusercontent.com/sathwick-p/claude-rename/main/src/hook.mjs"
-PROMPT_URL="https://raw.githubusercontent.com/sathwick-p/claude-rename/main/src/title-prompt.mjs"
+REPO="sathwick-p/claude-rename"
+
+# Fetch the latest release tag from GitHub API
+LATEST_TAG="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+if [ -z "$LATEST_TAG" ]; then
+  LATEST_TAG="main"
+  echo "  Could not determine latest release, using main branch"
+fi
+
+BASE_URL="https://raw.githubusercontent.com/$REPO/$LATEST_TAG"
+HOOK_URL="$BASE_URL/src/hook.mjs"
+PROMPT_URL="$BASE_URL/src/title-prompt.mjs"
 HOOK_DIR="$HOME/.claude/hooks"
 HOOK_FILE="$HOOK_DIR/claude-rename.mjs"
 PROMPT_FILE="$HOOK_DIR/title-prompt.mjs"
@@ -20,7 +30,7 @@ if [ -z "$DETECTED_NODE" ]; then
   exit 1
 fi
 
-echo "Installing claude-rename hook..."
+echo "Installing claude-rename $LATEST_TAG..."
 echo ""
 
 # 1. Download hook files
