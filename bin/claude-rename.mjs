@@ -1,0 +1,436 @@
+#!/usr/bin/env node
+
+/**
+ * claude-rename — Auto-name Claude Code sessions
+ *
+ * Usage:
+ *   claude-rename install         Install the auto-naming hook
+ *   claude-rename uninstall       Remove the hook
+ *   claude-rename list            List all sessions
+ *   claude-rename backfill        Name all untitled sessions
+ *   claude-rename rename <id> <t> Manually rename a session
+ *   claude-rename status          Show hook status
+ */
+
+import { readFileSync, writeFileSync, copyFileSync, existsSync, mkdirSync, appendFileSync, unlinkSync, readdirSync } from "fs";
+import { join, dirname } from "path";
+import { homedir } from "os";
+import { fileURLToPath } from "url";
+import { execFileSync } from "child_process";
+import { discoverSessions, parseSession } from "../src/sessions.mjs";
+import { generateTitle } from "../src/namer.mjs";
+
+const VALID_MODELS = ["haiku", "sonnet", "opus"];
+const DEFAULT_MODEL = "haiku";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const HOOK_SOURCE = join(__dirname, "..", "src", "hook.mjs");
+const HOOK_DEST = join(homedir(), ".claude", "hooks", "claude-rename.mjs");
+const SETTINGS_FILE = join(homedir(), ".claude", "settings.json");
+const MARKER_DIR = join(homedir(), ".claude", ".session-namer-named");
+
+const HOOK_COMMAND = 'node "$HOME/.claude/hooks/claude-rename.mjs"';
+
+const args = process.argv.slice(2);
+const command = args[0];
+
+function getFlag(name) {
+  const idx = args.indexOf(name);
+  if (idx === -1) return null;
+  const val = args[idx + 1];
+  if (!val || val.startsWith("-")) return null;
+  return val;
+}
+
+function hasFlag(name) {
+  return args.includes(name);
+}
+
+// ─── Commands ────────────────────────────────────────────────────────────────
+
+switch (command) {
+  case "install":
+    cmdInstall();
+    break;
+  case "uninstall":
+    cmdUninstall();
+    break;
+  case "list":
+    cmdList();
+    break;
+  case "backfill":
+    await cmdBackfill();
+    break;
+  case "rename":
+    cmdRename();
+    break;
+  case "status":
+    cmdStatus();
+    break;
+  case "help":
+  case "--help":
+  case "-h":
+  case undefined:
+    cmdHelp();
+    break;
+  default:
+    console.error(`Unknown command: ${command}\n`);
+    cmdHelp();
+    process.exit(1);
+}
+
+// ─── Install ─────────────────────────────────────────────────────────────────
+
+function cmdInstall() {
+  console.log("Installing claude-rename hook...\n");
+
+  // 1. Copy hook file
+  const hooksDir = join(homedir(), ".claude", "hooks");
+  mkdirSync(hooksDir, { recursive: true });
+  copyFileSync(HOOK_SOURCE, HOOK_DEST);
+  console.log(`  Hook copied to ${HOOK_DEST}`);
+
+  // 2. Register in settings.json
+  let settings = {};
+  if (existsSync(SETTINGS_FILE)) {
+    try {
+      settings = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
+    } catch {
+      console.error("  Failed to parse settings.json");
+      process.exit(1);
+    }
+  }
+
+  if (!settings.hooks) settings.hooks = {};
+  if (!settings.hooks.Stop) settings.hooks.Stop = [];
+
+  const alreadyRegistered = settings.hooks.Stop.some((entry) => {
+    const hooks = entry.hooks || [];
+    return hooks.some(
+      (h) => h.command && h.command.includes("claude-rename"),
+    );
+  });
+
+  if (!alreadyRegistered) {
+    settings.hooks.Stop.push({
+      hooks: [
+        {
+          type: "command",
+          command: HOOK_COMMAND,
+        },
+      ],
+    });
+    writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 4));
+    console.log("  Hook registered in settings.json");
+  } else {
+    console.log("  Hook already registered in settings.json");
+  }
+
+  console.log("\nDone! New sessions will be auto-named after the first exchange.");
+  console.log("No API key needed — uses your existing Claude Code subscription.");
+  console.log("\nRun 'claude-rename backfill' to name existing sessions.\n");
+}
+
+// ─── Uninstall ───────────────────────────────────────────────────────────────
+
+function cmdUninstall() {
+  console.log("Uninstalling claude-rename hook...\n");
+
+  if (existsSync(HOOK_DEST)) {
+    unlinkSync(HOOK_DEST);
+    console.log(`  Hook removed from ${HOOK_DEST}`);
+  } else {
+    console.log("  Hook file not found (already removed)");
+  }
+
+  if (existsSync(SETTINGS_FILE)) {
+    try {
+      const settings = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
+      if (settings.hooks?.Stop) {
+        const before = settings.hooks.Stop.length;
+        settings.hooks.Stop = settings.hooks.Stop.filter((entry) => {
+          const hooks = entry.hooks || [];
+          return !hooks.some(
+            (h) => h.command && h.command.includes("claude-rename"),
+          );
+        });
+        if (settings.hooks.Stop.length < before) {
+          writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 4));
+          console.log("  Hook removed from settings.json");
+        } else {
+          console.log("  Hook not found in settings.json");
+        }
+      }
+    } catch {
+      console.error("  Failed to update settings.json");
+    }
+  }
+
+  console.log("\nDone! Auto-naming is disabled. Existing names are preserved.\n");
+}
+
+// ─── List ────────────────────────────────────────────────────────────────────
+
+function cmdList() {
+  const filter = getFlag("--project");
+  const sessions = discoverSessions(filter);
+
+  if (sessions.length === 0) {
+    console.log("No sessions found.\n");
+    return;
+  }
+
+  console.log(`Found ${sessions.length} sessions:\n`);
+  console.log(
+    padRight("SESSION ID", 38) +
+      padRight("TITLE", 40) +
+      padRight("PROJECT", 30) +
+      "DATE",
+  );
+  console.log("-".repeat(120));
+
+  let untitled = 0;
+  for (const session of sessions) {
+    const parsed = parseSession(session.jsonlPath);
+    const title = parsed.customTitle || "(untitled)";
+    if (!parsed.customTitle) untitled++;
+    const project = session.projectPath.split("/").slice(-2).join("/");
+    const date = session.mtime.toISOString().slice(0, 16).replace("T", " ");
+
+    const titleStyle = parsed.customTitle ? title : dim(title);
+    console.log(
+      padRight(session.sessionId.slice(0, 36), 38) +
+        padRight(truncate(titleStyle, 38), 40) +
+        padRight(truncate(project, 28), 30) +
+        date,
+    );
+  }
+
+  console.log(
+    `\n${sessions.length} total, ${sessions.length - untitled} named, ${untitled} untitled\n`,
+  );
+}
+
+// ─── Backfill ────────────────────────────────────────────────────────────────
+
+async function cmdBackfill() {
+  const dryRun = hasFlag("--dry-run");
+  const filter = getFlag("--project");
+  const model = getFlag("--model") || DEFAULT_MODEL;
+  const sessions = discoverSessions(filter);
+
+  if (!VALID_MODELS.includes(model) && !model.startsWith("claude-")) {
+    console.error(`Unknown model: ${model}. Valid shortcuts: ${VALID_MODELS.join(", ")}\n`);
+    process.exit(1);
+  }
+
+  const untitled = [];
+  for (const session of sessions) {
+    const parsed = parseSession(session.jsonlPath);
+    if (!parsed.customTitle && parsed.userMessages.length > 0) {
+      untitled.push({ ...session, parsed });
+    }
+  }
+
+  if (untitled.length === 0) {
+    console.log("All sessions already have titles!\n");
+    return;
+  }
+
+  console.log(`Found ${untitled.length} untitled sessions to name.`);
+  console.log(`Using model: ${model}\n`);
+
+  const CONCURRENCY = 3;
+  let named = 0;
+  let failed = 0;
+
+  for (let i = 0; i < untitled.length; i += CONCURRENCY) {
+    const batch = untitled.slice(i, i + CONCURRENCY);
+    const promises = batch.map(async (session) => {
+      const { parsed } = session;
+
+      const result = await generateTitle(
+        parsed.userMessages,
+        parsed.assistantMessages,
+        model,
+      );
+
+      if (!result) {
+        failed++;
+        return;
+      }
+
+      const project = session.projectPath.split("/").slice(-2).join("/");
+      console.log(
+        `  [${model}] ${truncate(project, 25)} -> ${result.title}`,
+      );
+
+      if (!dryRun) {
+        const entry = JSON.stringify({
+          type: "custom-title",
+          customTitle: result.title,
+          sessionId: session.sessionId,
+        });
+        appendFileSync(session.jsonlPath, entry + "\n");
+
+        mkdirSync(MARKER_DIR, { recursive: true });
+        writeFileSync(join(MARKER_DIR, session.sessionId), "done");
+      }
+
+      named++;
+    });
+
+    await Promise.all(promises);
+  }
+
+  console.log(
+    `\n${dryRun ? "[DRY RUN] Would have named" : "Named"} ${named} sessions. ${failed} skipped.\n`,
+  );
+}
+
+// ─── Rename ──────────────────────────────────────────────────────────────────
+
+function cmdRename() {
+  const sessionId = args[1];
+  const title = args.slice(2).join(" ");
+
+  if (!sessionId || !title) {
+    console.error("Usage: claude-rename rename <session-id> <title>\n");
+    console.error(
+      "Tip: Use 'claude-rename list' to find session IDs.\n",
+    );
+    process.exit(1);
+  }
+
+  const sessions = discoverSessions();
+  const match = sessions.find(
+    (s) => s.sessionId === sessionId || s.sessionId.startsWith(sessionId),
+  );
+
+  if (!match) {
+    console.error(`Session not found: ${sessionId}\n`);
+    process.exit(1);
+  }
+
+  const entry = JSON.stringify({
+    type: "custom-title",
+    customTitle: title,
+    sessionId: match.sessionId,
+  });
+  appendFileSync(match.jsonlPath, entry + "\n");
+
+  mkdirSync(MARKER_DIR, { recursive: true });
+  writeFileSync(join(MARKER_DIR, match.sessionId), "done");
+
+  console.log(`Renamed session ${match.sessionId} -> "${title}"\n`);
+}
+
+// ─── Status ──────────────────────────────────────────────────────────────────
+
+function cmdStatus() {
+  console.log("claude-rename status\n");
+
+  const hookInstalled = existsSync(HOOK_DEST);
+  console.log(`  Hook file:     ${hookInstalled ? "installed" : "not installed"}`);
+
+  let hookRegistered = false;
+  if (existsSync(SETTINGS_FILE)) {
+    try {
+      const settings = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
+      hookRegistered = (settings.hooks?.Stop || []).some((entry) => {
+        const hooks = entry.hooks || [];
+        return hooks.some(
+          (h) => h.command && h.command.includes("claude-rename"),
+        );
+      });
+    } catch {}
+  }
+  console.log(`  Hook config:   ${hookRegistered ? "registered in settings.json" : "not registered"}`);
+
+  // Check claude CLI is available
+  let claudeAvailable = false;
+  try {
+    execFileSync("claude", ["--version"], { encoding: "utf-8", timeout: 5000, stdio: "pipe" });
+    claudeAvailable = true;
+  } catch {}
+  console.log(`  Claude CLI:    ${claudeAvailable ? "available" : "not found in PATH"}`);
+
+  const sessions = discoverSessions();
+  let titled = 0;
+  for (const s of sessions) {
+    const p = parseSession(s.jsonlPath);
+    if (p.customTitle) titled++;
+  }
+  console.log(`  Sessions:      ${sessions.length} total, ${titled} named, ${sessions.length - titled} untitled`);
+
+  let markerCount = 0;
+  if (existsSync(MARKER_DIR)) {
+    try {
+      markerCount = readdirSync(MARKER_DIR).length;
+    } catch {}
+  }
+  console.log(`  Marker files:  ${markerCount}`);
+
+  console.log("");
+}
+
+// ─── Help ────────────────────────────────────────────────────────────────────
+
+function cmdHelp() {
+  console.log(`claude-rename — Auto-name Claude Code sessions
+
+Usage:
+  claude-rename install                     Install the auto-naming Stop hook
+  claude-rename uninstall                   Remove the hook
+  claude-rename list [--project <filter>]   List all sessions with titles
+  claude-rename backfill [--dry-run]        Bulk-name all untitled sessions
+  claude-rename backfill --model <model>    Use a specific model (default: haiku)
+  claude-rename rename <id> <title>         Manually rename a session
+  claude-rename status                      Show installation status
+  claude-rename help                        Show this help
+
+Models:
+  haiku   (default) — fast and cheap, good for bulk backfill
+  sonnet  — balanced quality and speed
+  opus    — highest quality titles
+  Or pass a full model ID: claude-haiku-4-5-20251001
+
+How it works:
+  After installation, a Stop hook fires after each Claude Code turn.
+  On the first meaningful exchange, it asks Claude to generate a
+  descriptive title and write it to the session file.
+  No separate API key needed — uses your running Claude Code instance.
+
+  For backfilling old sessions, 'claude-rename backfill' uses 'claude -p'
+  (pipe mode) from your existing Claude Code subscription.
+
+Config:
+  Set default model in ~/.claude-rename.json: {"model": "haiku"}
+
+Setup:
+  1. npm install -g claude-rename
+  2. claude-rename install
+  3. Start using Claude Code — sessions auto-name themselves!
+  4. claude-rename backfill   (to name existing sessions)
+`);
+}
+
+// ─── Formatting Helpers ──────────────────────────────────────────────────────
+
+function padRight(str, len) {
+  const visible = str.replace(/\x1b\[[0-9;]*m/g, "");
+  if (visible.length >= len) return str + "  ";
+  return str + " ".repeat(len - visible.length);
+}
+
+function truncate(str, len) {
+  const visible = str.replace(/\x1b\[[0-9;]*m/g, "");
+  if (visible.length <= len) return str;
+  return str.slice(0, len - 1) + "…";
+}
+
+function dim(str) {
+  return `\x1b[2m${str}\x1b[0m`;
+}
