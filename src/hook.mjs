@@ -245,9 +245,14 @@ Title:`;
         const lines = title.split("\n").filter((l) => l.trim());
         if (lines.length > 0) title = lines[lines.length - 1].trim();
 
-        title = title.replace(/[`'"]/g, "").replace(/[.\s]+$/, "");
+        title = title
+          .replace(/[`'"*]/g, "")
+          .replace(/^[^a-z]*/, "")
+          .replace(/[.\s]+$/, "")
+          .replace(/\s+/g, "-")
+          .toLowerCase();
 
-        if (title && title.length >= 5 && title.length <= 50) {
+        if (title && title.length >= 5 && title.length <= 50 && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(title)) {
           resolve(title);
         } else {
           resolve(null);
