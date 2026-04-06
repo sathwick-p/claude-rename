@@ -129,6 +129,7 @@ This is the same format Claude Code's built-in `/rename` command uses.
 
 | Path | Purpose |
 |---|---|
+| `~/.claude/hooks/claude-rename-runner.sh` | Shell wrapper that finds node (NVM/fnm/volta/system) |
 | `~/.claude/hooks/claude-rename.mjs` | The Stop hook (copied during install) |
 | `~/.claude/hooks/title-prompt.mjs` | Shared title prompt and normalization helper |
 | `~/.claude/settings.json` | Hook registration (modified during install) |
