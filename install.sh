@@ -16,8 +16,8 @@ HOOK_COMMAND='"$HOME/.claude/hooks/claude-rename-runner.sh"'
 # Detect the current node binary path for the fast path in runner script
 DETECTED_NODE="$(command -v node 2>/dev/null || true)"
 if [ -z "$DETECTED_NODE" ]; then
-  echo "Warning: node not found in PATH. The hook will search common locations at runtime."
-  DETECTED_NODE="/usr/local/bin/node"
+  echo "Error: node not found in PATH. Re-run this installer from a shell that can find Node.js."
+  exit 1
 fi
 
 echo "Installing claude-rename hook..."
