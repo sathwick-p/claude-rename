@@ -242,7 +242,7 @@ async function cmdBackfill() {
   console.log(`Found ${untitled.length} untitled sessions to name.`);
   console.log(`Using model: ${model}\n`);
 
-  const CONCURRENCY = 3;
+  const CONCURRENCY = model === "opus" ? 3 : 10;
   let named = 0;
   let failed = 0;
 
