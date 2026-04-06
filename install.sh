@@ -2,21 +2,31 @@
 # claude-rename installer — sets up the auto-naming hook for Claude Code
 # Usage: curl -sL https://raw.githubusercontent.com/sathwick-p/claude-rename/main/install.sh | bash
 
-set -e
+set -euo pipefail
 
 HOOK_URL="https://raw.githubusercontent.com/sathwick-p/claude-rename/main/src/hook.mjs"
+PROMPT_URL="https://raw.githubusercontent.com/sathwick-p/claude-rename/main/src/title-prompt.mjs"
 HOOK_DIR="$HOME/.claude/hooks"
 HOOK_FILE="$HOOK_DIR/claude-rename.mjs"
+PROMPT_FILE="$HOOK_DIR/title-prompt.mjs"
 SETTINGS_FILE="$HOME/.claude/settings.json"
-HOOK_COMMAND='node "$HOME/.claude/hooks/claude-rename.mjs"'
+# Resolve absolute node path to avoid NVM/PATH issues in /bin/sh hooks
+NODE_BIN="$(command -v node)"
+if [ -z "$NODE_BIN" ]; then
+  echo "Error: node not found in PATH. Please install Node.js >= 18."
+  exit 1
+fi
+HOOK_COMMAND="$NODE_BIN \"\$HOME/.claude/hooks/claude-rename.mjs\""
 
 echo "Installing claude-rename hook..."
 echo ""
 
 # 1. Download hook file
 mkdir -p "$HOOK_DIR"
-curl -sL "$HOOK_URL" -o "$HOOK_FILE"
+curl -fsSL "$HOOK_URL" -o "$HOOK_FILE"
 echo "  Hook downloaded to $HOOK_FILE"
+curl -fsSL "$PROMPT_URL" -o "$PROMPT_FILE"
+echo "  Prompt helper downloaded to $PROMPT_FILE"
 
 # 2. Register in settings.json using Node (always available with Claude Code)
 node -e "

@@ -12,10 +12,10 @@
  *
  * Flow:
  *   1st qualified Stop → inject naming instruction → Claude writes title
- *   2nd Stop (if title missing) → heuristic fallback via background worker
+ *   2nd Stop (if title missing) → AI fallback via background worker
  *
  * Install: claude-rename install
- * This file is SELF-CONTAINED — gets copied to ~/.claude/hooks/
+ * This file is copied to ~/.claude/hooks/ together with title-prompt.mjs.
  */
 
 import {
@@ -31,7 +31,9 @@ import {
 } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { fileURLToPath } from "url";
 import { spawn, execFile } from "child_process";
+import { buildTitlePrompt, normalizeGeneratedTitle } from "./title-prompt.mjs";
 
 const MARKER_DIR = join(homedir(), ".claude", ".session-namer-named");
 const LOG_FILE = join(homedir(), ".claude-rename.log");
@@ -69,6 +71,11 @@ async function main() {
 
     const sessionId = data.sessionId || data.session_id || "";
     const cwd = data.cwd || data.directory || "";
+    if (data.stop_hook_active) {
+      output({ continue: true, suppressOutput: true });
+      return;
+    }
+
     const stopReason = (
       data.stop_reason ||
       data.stopReason ||
@@ -91,6 +98,9 @@ async function main() {
     }
 
     const markerPath = join(MARKER_DIR, sessionId);
+    const jsonlPath =
+      resolveTranscriptPath(data.transcript_path || data.transcriptPath) ||
+      getSessionJsonlPath(cwd, sessionId);
 
     // Already fully named? (marker contains "done")
     if (isMarkerDone(markerPath)) {
@@ -98,14 +108,18 @@ async function main() {
       return;
     }
 
-    const jsonlPath = getSessionJsonlPath(cwd, sessionId);
     if (!existsSync(jsonlPath)) {
       output({ continue: true, suppressOutput: true });
       return;
     }
 
     // Check if title was written (by Claude or backfill)
-    if (hasCustomTitleInJsonl(jsonlPath)) {
+    const titleStatus = hasCustomTitleInJsonl(jsonlPath);
+    if (titleStatus === null) {
+      output({ continue: true, suppressOutput: true });
+      return;
+    }
+    if (titleStatus) {
       markDone(markerPath);
       output({ continue: true, suppressOutput: true });
       return;
@@ -183,7 +197,9 @@ IMPORTANT: Just run the Bash command silently. Do not explain what you're doing 
 
 async function nameSessionAI(sessionId, jsonlPath) {
   if (isMarkerDone(join(MARKER_DIR, sessionId))) return;
-  if (hasCustomTitleInJsonl(jsonlPath)) {
+  const titleStatus = hasCustomTitleInJsonl(jsonlPath);
+  if (titleStatus === null) return;
+  if (titleStatus) {
     markDone(join(MARKER_DIR, sessionId));
     return;
   }
@@ -211,27 +227,9 @@ function getConfigModel() {
 }
 
 function generateTitleViaClaude(userMessages, assistantMessages, model) {
-  const userContext = userMessages.slice(0, 3).join("\n\n").slice(0, 1500);
-  const assistantContext = assistantMessages.slice(0, 1).join("\n").slice(0, 500);
-
-  const prompt = `You generate short session titles for Claude Code conversations.
-
-Rules:
-- 3-6 words, kebab-case, lowercase, max 50 characters
-- Be SPECIFIC: mention the actual technology, feature, file, or bug
-- Focus on WHAT was done, not how the conversation started
-- Never include URLs, file paths, or generic words like "help", "work", "session", "project"
-- Good: "fix-stripe-webhook-retry", "k8s-helm-ingress-setup", "refactor-auth-middleware"
-- Bad: "coding-session", "helping-with-code", "read-and-understand-repo"
-- Reply with ONLY the title, nothing else
-
-User messages:
-${userContext}
-
-Assistant response:
-${assistantContext}
-
-Title:`;
+  const prompt = buildTitlePrompt(userMessages, assistantMessages, {
+    replyInstruction: "Reply with ONLY the title, nothing else",
+  });
 
   return new Promise((resolve) => {
     execFile(
@@ -239,24 +237,12 @@ Title:`;
       ["-p", "--model", model, prompt],
       { timeout: 30000, encoding: "utf-8" },
       (err, stdout) => {
-        if (err) { resolve(null); return; }
-
-        let title = stdout.trim();
-        const lines = title.split("\n").filter((l) => l.trim());
-        if (lines.length > 0) title = lines[lines.length - 1].trim();
-
-        title = title
-          .replace(/[`'"*]/g, "")
-          .replace(/^[^a-z]*/, "")
-          .replace(/[.\s]+$/, "")
-          .replace(/\s+/g, "-")
-          .toLowerCase();
-
-        if (title && title.length >= 5 && title.length <= 50 && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(title)) {
-          resolve(title);
-        } else {
+        if (err) {
           resolve(null);
+          return;
         }
+
+        resolve(normalizeGeneratedTitle(stdout));
       },
     );
   });
@@ -296,6 +282,14 @@ function readStdin(timeoutMs = 3000) {
 
 // ─── Path Utilities ──────────────────────────────────────────────────────────
 
+function resolveTranscriptPath(transcriptPath) {
+  if (!transcriptPath || typeof transcriptPath !== "string") return null;
+  if (transcriptPath.startsWith("~")) {
+    return join(homedir(), transcriptPath.slice(2));
+  }
+  return transcriptPath;
+}
+
 function cwdToProjectDir(cwd) {
   return cwd.replace(/\//g, "-");
 }
@@ -322,7 +316,7 @@ function markDone(markerPath) {
   } catch {}
 }
 
-function hasCustomTitleInJsonl(jsonlPath) {
+export function hasCustomTitleInJsonl(jsonlPath) {
   try {
     const stats = statSync(jsonlPath);
     let content;
@@ -342,11 +336,13 @@ function hasCustomTitleInJsonl(jsonlPath) {
       try {
         const entry = JSON.parse(line);
         if (entry.type === "custom-title") return true;
-      } catch {}
+      } catch {
+        return null;
+      }
     }
     return false;
   } catch {
-    return true;
+    return null;
   }
 }
 
@@ -451,4 +447,6 @@ function output(obj) {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main();
+}

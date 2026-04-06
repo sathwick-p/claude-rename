@@ -16,7 +16,7 @@ Auto-name your Claude Code sessions with descriptive, AI-powered titles.
 curl -sL https://raw.githubusercontent.com/sathwick-p/claude-rename/main/install.sh | bash
 ```
 
-This downloads the hook file and registers it in your Claude Code settings. That's it — new sessions auto-name themselves.
+This downloads the hook file plus its shared prompt helper, then registers the hook in your Claude Code settings. That's it — new sessions auto-name themselves.
 
 ### npx (full CLI — no install)
 
@@ -56,7 +56,7 @@ Since Claude generates the title from its own context (not a separate API call),
 | `claude-rename uninstall` | Remove the hook cleanly |
 | `claude-rename list [--project <filter>]` | List all sessions with their titles |
 | `claude-rename backfill [--dry-run] [--model <model>]` | Bulk-name all untitled sessions |
-| `claude-rename rename <id> <title>` | Manually rename a specific session |
+| `claude-rename rename <id> <title>` | Manually rename a specific session by exact session ID |
 | `claude-rename status` | Show hook installation status |
 
 ## Model selection
@@ -117,7 +117,7 @@ claude-rename backfill --project my-project
 
 ## Session storage
 
-Claude Code stores sessions at `~/.claude/projects/<encoded-path>/<uuid>.jsonl`. Titles are written as:
+Claude Code stores sessions at `~/.claude/projects/<encoded-path>/<uuid>.jsonl`. The tool now preserves the stored project directory as-is instead of trying to reverse that encoding. Titles are written as:
 
 ```json
 {"type":"custom-title","customTitle":"fix-stripe-webhook-retry","sessionId":"abc-123-..."}
@@ -130,6 +130,7 @@ This is the same format Claude Code's built-in `/rename` command uses.
 | Path | Purpose |
 |---|---|
 | `~/.claude/hooks/claude-rename.mjs` | The Stop hook (copied during install) |
+| `~/.claude/hooks/title-prompt.mjs` | Shared title prompt and normalization helper |
 | `~/.claude/settings.json` | Hook registration (modified during install) |
 | `~/.claude-rename.log` | Debug log (append-only) |
 | `~/.claude-rename.json` | Config (optional — set default model) |

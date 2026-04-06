@@ -27,11 +27,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const HOOK_SOURCE = join(__dirname, "..", "src", "hook.mjs");
+const PROMPT_SOURCE = join(__dirname, "..", "src", "title-prompt.mjs");
 const HOOK_DEST = join(homedir(), ".claude", "hooks", "claude-rename.mjs");
+const PROMPT_DEST = join(homedir(), ".claude", "hooks", "title-prompt.mjs");
 const SETTINGS_FILE = join(homedir(), ".claude", "settings.json");
 const MARKER_DIR = join(homedir(), ".claude", ".session-namer-named");
 
-const HOOK_COMMAND = 'node "$HOME/.claude/hooks/claude-rename.mjs"';
+// Use absolute node path to avoid NVM/PATH issues in /bin/sh hooks
+const HOOK_COMMAND = `${process.execPath} "$HOME/.claude/hooks/claude-rename.mjs"`;
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -91,6 +94,8 @@ function cmdInstall() {
   mkdirSync(hooksDir, { recursive: true });
   copyFileSync(HOOK_SOURCE, HOOK_DEST);
   console.log(`  Hook copied to ${HOOK_DEST}`);
+  copyFileSync(PROMPT_SOURCE, PROMPT_DEST);
+  console.log(`  Prompt helper copied to ${PROMPT_DEST}`);
 
   // 2. Register in settings.json
   let settings = {};
@@ -145,6 +150,11 @@ function cmdUninstall() {
     console.log("  Hook file not found (already removed)");
   }
 
+  if (existsSync(PROMPT_DEST)) {
+    unlinkSync(PROMPT_DEST);
+    console.log(`  Prompt helper removed from ${PROMPT_DEST}`);
+  }
+
   if (existsSync(SETTINGS_FILE)) {
     try {
       const settings = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
@@ -186,7 +196,7 @@ function cmdList() {
   console.log(
     padRight("SESSION ID", 38) +
       padRight("TITLE", 40) +
-      padRight("PROJECT", 30) +
+      padRight("PROJECT DIR", 30) +
       "DATE",
   );
   console.log("-".repeat(120));
@@ -196,13 +206,14 @@ function cmdList() {
     const parsed = parseSession(session.jsonlPath);
     const title = parsed.customTitle || "(untitled)";
     if (!parsed.customTitle) untitled++;
-    const project = session.projectPath.split("/").slice(-2).join("/");
+    const project = session.projectDir || session.projectPath;
     const date = session.mtime.toISOString().slice(0, 16).replace("T", " ");
 
-    const titleStyle = parsed.customTitle ? title : dim(title);
+    const titleText = parsed.customTitle ? title : truncate(title, 38);
+    const titleStyle = parsed.customTitle ? titleText : dim(titleText);
     console.log(
       padRight(session.sessionId.slice(0, 36), 38) +
-        padRight(truncate(titleStyle, 38), 40) +
+        padRight(titleStyle, 40) +
         padRight(truncate(project, 28), 30) +
         date,
     );
@@ -262,7 +273,7 @@ async function cmdBackfill() {
         return;
       }
 
-      const project = session.projectPath.split("/").slice(-2).join("/");
+      const project = session.projectDir || session.projectPath;
       console.log(
         `  [${model}] ${truncate(project, 25)} -> ${result.title}`,
       );
@@ -305,14 +316,17 @@ function cmdRename() {
   }
 
   const sessions = discoverSessions();
-  const match = sessions.find(
-    (s) => s.sessionId === sessionId || s.sessionId.startsWith(sessionId),
-  );
-
-  if (!match) {
-    console.error(`Session not found: ${sessionId}\n`);
+  const exactMatches = sessions.filter((s) => s.sessionId === sessionId);
+  if (exactMatches.length !== 1) {
+    if (exactMatches.length === 0) {
+      console.error(`Session not found: ${sessionId}\n`);
+    } else {
+      console.error(`Ambiguous session id: ${sessionId}\n`);
+    }
     process.exit(1);
   }
+
+  const match = exactMatches[0];
 
   const entry = JSON.stringify({
     type: "custom-title",
@@ -334,6 +348,8 @@ function cmdStatus() {
 
   const hookInstalled = existsSync(HOOK_DEST);
   console.log(`  Hook file:     ${hookInstalled ? "installed" : "not installed"}`);
+  const promptInstalled = existsSync(PROMPT_DEST);
+  console.log(`  Prompt helper: ${promptInstalled ? "installed" : "not installed"}`);
 
   let hookRegistered = false;
   if (existsSync(SETTINGS_FILE)) {

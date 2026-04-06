@@ -4,6 +4,7 @@
  */
 
 import { execFile } from "child_process";
+import { buildTitlePrompt, normalizeGeneratedTitle } from "./title-prompt.mjs";
 
 /**
  * Generate a title using Claude Code pipe mode.
@@ -21,30 +22,10 @@ export async function generateTitle(userMessages, assistantMessages, model = "ha
 }
 
 function generateTitleViaClaude(userMessages, assistantMessages, model) {
-  const userContext = userMessages.slice(0, 3).join("\n\n").slice(0, 1500);
-  const assistantContext = assistantMessages
-    .slice(0, 1)
-    .join("\n")
-    .slice(0, 500);
-
-  const prompt = `You generate short session titles for Claude Code conversations.
-
-Rules:
-- 3-6 words, kebab-case, lowercase, max 50 characters
-- Be SPECIFIC: mention the actual technology, feature, file, or bug
-- Focus on WHAT was done, not how the conversation started
-- Never include URLs, file paths, or generic words like "help", "work", "session", "project"
-- Good: "fix-stripe-webhook-retry", "k8s-helm-ingress-setup", "refactor-auth-middleware"
-- Bad: "coding-session", "helping-with-code", "read-and-understand-repo"
-- Reply with ONLY the title, nothing else — no explanation, no quotes
-
-User messages:
-${userContext}
-
-Assistant response:
-${assistantContext}
-
-Title:`;
+  const prompt = buildTitlePrompt(userMessages, assistantMessages, {
+    replyInstruction: "Reply with ONLY the title, nothing else",
+    includeQuotesNote: true,
+  });
 
   return new Promise((resolve) => {
     execFile(
@@ -57,22 +38,7 @@ Title:`;
           return;
         }
 
-        let title = stdout.trim();
-        const lines = title.split("\n").filter((l) => l.trim());
-        if (lines.length > 0) title = lines[lines.length - 1].trim();
-
-        title = title
-          .replace(/[`'"*]/g, "")
-          .replace(/^[^a-z]*/, "")
-          .replace(/[.\s]+$/, "")
-          .replace(/\s+/g, "-")
-          .toLowerCase();
-
-        if (title && title.length >= 5 && title.length <= 50 && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(title)) {
-          resolve(title);
-        } else {
-          resolve(null);
-        }
+        resolve(normalizeGeneratedTitle(stdout));
       },
     );
   });

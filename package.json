@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Auto-name Claude Code sessions with AI-powered descriptive titles",
   "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
   "bin": {
     "claude-rename": "./bin/claude-rename.mjs"
   },

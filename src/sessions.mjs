@@ -11,14 +11,6 @@ const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/;
 
-export function cwdToProjectDir(cwd) {
-  return cwd.replace(/\//g, "-");
-}
-
-export function projectDirToCwd(dir) {
-  return dir.replace(/^-/, "/").replace(/-/g, "/");
-}
-
 /**
  * Discover all session JSONL files across all projects.
  * Returns array of { sessionId, projectDir, projectPath, jsonlPath, mtime }
@@ -38,14 +30,8 @@ export function discoverSessions(filterProject = null) {
   });
 
   for (const projectDir of projectDirs) {
-    if (filterProject) {
-      const projectPath = projectDirToCwd(projectDir);
-      if (
-        !projectPath.includes(filterProject) &&
-        !projectDir.includes(filterProject)
-      ) {
-        continue;
-      }
+    if (filterProject && !projectDir.includes(filterProject)) {
+      continue;
     }
 
     const projectPath = join(PROJECTS_DIR, projectDir);
@@ -64,7 +50,7 @@ export function discoverSessions(filterProject = null) {
         sessions.push({
           sessionId,
           projectDir,
-          projectPath: projectDirToCwd(projectDir),
+          projectPath: projectDir,
           jsonlPath,
           mtime: stats.mtime,
           size: stats.size,
@@ -87,6 +73,7 @@ export function parseSession(jsonlPath) {
     userMessages: [],
     assistantMessages: [],
     startedAt: null,
+    cwd: null,
     gitBranch: null,
     version: null,
     messageCount: 0,
@@ -102,6 +89,10 @@ export function parseSession(jsonlPath) {
 
         if (entry.type === "custom-title") {
           result.customTitle = entry.customTitle;
+        }
+
+        if (!result.cwd && typeof entry.cwd === "string") {
+          result.cwd = entry.cwd;
         }
 
         if (entry.type === "user" && entry.message?.content) {
