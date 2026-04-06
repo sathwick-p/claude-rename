@@ -40,13 +40,11 @@ claude-rename install
 ## How it works
 
 1. A **Stop hook** fires after each Claude Code assistant turn
-2. On the **first meaningful exchange** of a new session, it injects a naming instruction
-3. **Claude itself** generates a concise 3-6 word title (max 50 chars) from its full conversation context
-4. The title is written to the session file — appears in `claude --resume` immediately
-5. If the injection didn't work, a **background fallback** names it via `claude -p` (AI, not heuristic)
+2. On the **first meaningful exchange** of a new session, it spawns a **background worker**
+3. The worker runs `claude -p` to generate a concise 3-6 word title (max 50 chars)
+4. The title is written to the session file — appears in `claude --resume`
+5. **Completely silent** — the hook never shows any output to the user
 6. **Idempotent** — only names each session once, subsequent turns are a no-op
-
-Since Claude generates the title from its own context (not a separate API call), the titles are highly accurate and specific.
 
 ## Commands
 
@@ -87,17 +85,14 @@ Claude responds (Stop event fires)
         |-- Context limit / abort stop? -> skip (never block)
         |-- No real conversation yet? -> skip
         |
-   First time: inject naming instruction into Claude's context
+   Spawn background worker (claude -p --model haiku)
         |
-   Claude reads instruction -> generates title -> writes it via Bash
+   Worker generates title -> writes to JSONL -> marks done
         |
-   If Bash was denied or Claude didn't write:
-        |-- Next Stop fires -> AI fallback via claude -p (background)
-        |
-   Marker file created -> skip on all future Stops
+   All future Stops -> skip instantly via marker file
 ```
 
-**Zero separate API calls.** The hook leverages the already-running Claude instance to generate the title. The only "cost" is one brief Bash tool call after your first exchange.
+**Completely silent.** The hook always returns `suppressOutput: true` and never injects anything into your conversation. Title generation happens in a background process.
 
 ## Backfilling existing sessions
 

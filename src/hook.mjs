@@ -3,16 +3,16 @@
 /**
  * Claude Code Session Auto-Namer — Stop Hook
  *
- * Self-contained hook that fires after each assistant turn.
- * On the first meaningful exchange of a new session, it injects a naming
- * instruction into Claude's context. Claude generates a descriptive title
- * from its own conversation context and writes it to the JSONL file.
+ * Fires after each assistant turn. On the first meaningful exchange of a
+ * new session, spawns a background worker that names it via `claude -p`.
  *
- * No separate API key needed — uses the running Claude Code instance.
+ * No separate API key needed — uses your existing Claude Code subscription.
+ * Always outputs { continue: true, suppressOutput: true } so the user
+ * never sees any hook output.
  *
  * Flow:
- *   1st qualified Stop → inject naming instruction → Claude writes title
- *   2nd Stop (if title missing) → AI fallback via background worker
+ *   Stop fires → session needs naming? → spawn background `claude -p` worker
+ *   Worker generates title → writes to JSONL → marks done
  *
  * Install: claude-rename install
  * This file is copied to ~/.claude/hooks/ together with title-prompt.mjs.
@@ -39,7 +39,7 @@ const MARKER_DIR = join(homedir(), ".claude", ".session-namer-named");
 const LOG_FILE = join(homedir(), ".claude-rename.log");
 
 // ─── Background Worker Mode ─────────────────────────────────────────────────
-// When invoked with --name, we're the fallback worker doing AI naming via claude -p.
+// When invoked with --name, we're the background worker doing AI naming via claude -p.
 
 if (process.argv.includes("--name")) {
   const idx = process.argv.indexOf("--name");
@@ -65,14 +65,14 @@ async function main() {
     try {
       data = JSON.parse(input);
     } catch {
-      output({ continue: true, suppressOutput: true });
+      output();
       return;
     }
 
     const sessionId = data.sessionId || data.session_id || "";
     const cwd = data.cwd || data.directory || "";
     if (data.stop_hook_active) {
-      output({ continue: true, suppressOutput: true });
+      output();
       return;
     }
 
@@ -88,12 +88,12 @@ async function main() {
       stopReason.includes("abort") ||
       stopReason.includes("cancel")
     ) {
-      output({ continue: true, suppressOutput: true });
+      output();
       return;
     }
 
     if (!sessionId || !cwd) {
-      output({ continue: true, suppressOutput: true });
+      output();
       return;
     }
 
@@ -104,96 +104,58 @@ async function main() {
 
     // Already fully named? (marker contains "done")
     if (isMarkerDone(markerPath)) {
-      output({ continue: true, suppressOutput: true });
+      output();
       return;
     }
 
     if (!existsSync(jsonlPath)) {
-      output({ continue: true, suppressOutput: true });
+      output();
       return;
     }
 
-    // Check if title was written (by Claude or backfill)
+    // Check if title was written (by backfill or a previous worker)
     const titleStatus = hasCustomTitleInJsonl(jsonlPath);
     if (titleStatus === null) {
-      output({ continue: true, suppressOutput: true });
+      output();
       return;
     }
     if (titleStatus) {
       markDone(markerPath);
-      output({ continue: true, suppressOutput: true });
+      output();
       return;
     }
 
     // Not enough conversation yet? Skip.
     if (!hasMinimalConversation(jsonlPath)) {
-      output({ continue: true, suppressOutput: true });
+      output();
       return;
     }
 
-    // ── Was naming already attempted (injection sent)? ──
+    // Already spawned a worker? Don't spawn another.
     if (existsSync(markerPath)) {
-      const markerContent = readFileSync(markerPath, "utf-8").trim();
-      if (markerContent === "heuristic") {
-        // Worker already spawned, wait for it to finish
-        output({ continue: true, suppressOutput: true });
-        return;
-      }
-      // Injection was sent but Claude didn't write the title.
-      // Fall back to AI naming via background worker (claude -p).
-      writeFileSync(markerPath, "heuristic");
-      output({ continue: true, suppressOutput: true });
-      const child = spawn(
-        process.execPath,
-        [process.argv[1], "--name", sessionId, jsonlPath],
-        { detached: true, stdio: "ignore" },
-      );
-      child.unref();
+      output();
       return;
     }
 
-    // ── First time: inject naming instruction into Claude's context ──
+    // ── Spawn background AI naming worker ──
     mkdirSync(MARKER_DIR, { recursive: true });
-    writeFileSync(markerPath, "pending");
-    log(`Injecting naming instruction for ${sessionId}`);
+    writeFileSync(markerPath, "naming");
+    log(`Spawning background namer for ${sessionId}`);
 
-    const instruction = buildNamingInstruction(sessionId, jsonlPath);
+    const child = spawn(
+      process.execPath,
+      [process.argv[1], "--name", sessionId, jsonlPath],
+      { detached: true, stdio: "ignore" },
+    );
+    child.unref();
 
-    output({
-      continue: true,
-      systemMessage: instruction,
-    });
+    output();
   } catch {
-    output({ continue: true, suppressOutput: true });
+    output();
   }
 }
 
-// ─── Naming Instruction ─────────────────────────────────────────────────────
-
-function buildNamingInstruction(sessionId, jsonlPath) {
-  // Escape the path for safe shell usage
-  const safePath = jsonlPath.replace(/'/g, "'\\''");
-
-  return `<session-auto-name>
-You need to name this session so it shows up with a meaningful title in "claude --resume".
-
-Generate a specific 3-6 word kebab-case title (max 50 chars) based on the conversation so far, then run this Bash command:
-
-echo '{"type":"custom-title","customTitle":"YOUR_TITLE_HERE","sessionId":"${sessionId}"}' >> '${safePath}'
-
-Rules for the title:
-- 3-6 words, kebab-case, lowercase, max 50 characters
-- Be SPECIFIC: mention the actual technology, feature, file, or bug discussed
-- Focus on WHAT was done, not how the conversation started
-- Never include URLs, file paths, or generic words like "help", "work", "session", "project"
-- Good: "fix-stripe-webhook-retry", "k8s-helm-ingress-setup", "refactor-auth-middleware"
-- Bad: "coding-session", "helping-with-code", "read-and-understand-repo"
-
-IMPORTANT: Just run the Bash command silently. Do not explain what you're doing or mention this to the user. Do not output any text — only the tool call.
-</session-auto-name>`;
-}
-
-// ─── AI Naming (background fallback via claude -p) ──────────────────────────
+// ─── AI Naming (background worker via claude -p) ────────────────────────────
 
 async function nameSessionAI(sessionId, jsonlPath) {
   if (isMarkerDone(join(MARKER_DIR, sessionId))) return;
@@ -212,7 +174,9 @@ async function nameSessionAI(sessionId, jsonlPath) {
   if (title) {
     writeTitle(jsonlPath, sessionId, title);
     markDone(join(MARKER_DIR, sessionId));
-    log(`AI fallback (${model}): ${sessionId} → "${title}"`);
+    log(`Named (${model}): ${sessionId} → "${title}"`);
+  } else {
+    log(`Failed to generate title for ${sessionId}`);
   }
 }
 
@@ -441,8 +405,8 @@ function log(msg) {
 
 // ─── Output ──────────────────────────────────────────────────────────────────
 
-function output(obj) {
-  process.stdout.write(JSON.stringify(obj) + "\n");
+function output() {
+  process.stdout.write(JSON.stringify({ continue: true, suppressOutput: true }) + "\n");
 }
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
