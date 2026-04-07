@@ -32,8 +32,8 @@ import {
 import { join } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
-import { spawn, execFile } from "child_process";
-import { buildTitlePrompt, normalizeGeneratedTitle } from "./title-prompt.mjs";
+import { spawn } from "child_process";
+import { buildTitlePrompt, generateTitleViaCLI } from "./title-prompt.mjs";
 
 const MARKER_DIR = join(homedir(), ".claude", ".session-namer-named");
 const LOG_FILE = join(homedir(), ".claude-rename.log");
@@ -194,22 +194,7 @@ function generateTitleViaClaude(userMessages, assistantMessages, model) {
   const prompt = buildTitlePrompt(userMessages, assistantMessages, {
     replyInstruction: "Reply with ONLY the title, nothing else",
   });
-
-  return new Promise((resolve) => {
-    execFile(
-      "claude",
-      ["-p", "--model", model, prompt],
-      { timeout: 30000, encoding: "utf-8" },
-      (err, stdout) => {
-        if (err) {
-          resolve(null);
-          return;
-        }
-
-        resolve(normalizeGeneratedTitle(stdout));
-      },
-    );
-  });
+  return generateTitleViaCLI(prompt, model);
 }
 
 // ─── Stdin Reader ────────────────────────────────────────────────────────────

@@ -1,7 +1,12 @@
 /**
- * Shared title-generation prompt and normalization helpers.
+ * Shared title-generation prompt, normalization, and CLI invocation.
  * Keep the hook fallback and the CLI backfill logic aligned.
  */
+
+import { spawn } from "child_process";
+import { existsSync, mkdirSync, rmSync } from "fs";
+import { join } from "path";
+import { homedir, tmpdir } from "os";
 
 const TITLE_PROMPT_RULES = `Rules:
 - 3-6 words, kebab-case, lowercase, max 50 characters
@@ -10,6 +15,11 @@ const TITLE_PROMPT_RULES = `Rules:
 - Never include URLs, file paths, or generic words like "help", "work", "session", "project"
 - Good: "fix-stripe-webhook-retry", "k8s-helm-ingress-setup", "refactor-auth-middleware"
 - Bad: "coding-session", "helping-with-code", "read-and-understand-repo"`;
+
+// Dedicated temp directory for claude -p worker sessions.
+// Sessions created here are cleaned up after each call so they
+// never appear in the user's `claude --resume` list.
+const WORKER_CWD = join(tmpdir(), "claude-rename-worker");
 
 export function buildTitlePrompt(userMessages, assistantMessages, options = {}) {
   const {
@@ -62,4 +72,76 @@ export function normalizeGeneratedTitle(rawOutput) {
   }
 
   return null;
+}
+
+/**
+ * Run `claude -p --model <model>` with the given prompt piped via stdin.
+ * Runs from a temp directory and cleans up the session file afterwards
+ * so worker sessions never appear in the user's `claude --resume` list.
+ *
+ * @param {string} prompt - The prompt to send
+ * @param {string} model - Model name (e.g. "haiku", "sonnet")
+ * @returns {Promise<string|null>} Normalized kebab-case title, or null
+ */
+export function generateTitleViaCLI(prompt, model) {
+  mkdirSync(WORKER_CWD, { recursive: true });
+
+  return new Promise((resolve) => {
+    let stdout = "";
+    let settled = false;
+
+    const child = spawn("claude", ["-p", "--model", model], {
+      cwd: WORKER_CWD,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        child.kill();
+        cleanupWorkerSessions();
+        resolve(null);
+      }
+    }, 30000);
+
+    child.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    child.on("close", () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        cleanupWorkerSessions();
+        resolve(normalizeGeneratedTitle(stdout));
+      }
+    });
+
+    child.on("error", () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        cleanupWorkerSessions();
+        resolve(null);
+      }
+    });
+
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
+}
+
+/**
+ * Remove session files created by `claude -p` in the worker directory.
+ * The project directory is derived from WORKER_CWD the same way Claude Code
+ * encodes cwd paths: replace / with -.
+ */
+function cleanupWorkerSessions() {
+  try {
+    const encoded = WORKER_CWD.replace(/\//g, "-");
+    const projectDir = join(homedir(), ".claude", "projects", encoded);
+    if (existsSync(projectDir)) {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  } catch {}
 }
