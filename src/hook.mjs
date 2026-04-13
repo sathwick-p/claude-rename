@@ -60,6 +60,12 @@ if (process.argv.includes("--name")) {
 
 async function main() {
   try {
+    // Guard: skip if running inside a worker process to prevent cascade loops
+    if (process.env.CLAUDE_RENAME_WORKER) {
+      output();
+      return;
+    }
+
     const input = await readStdin();
     let data = {};
     try {
@@ -71,6 +77,13 @@ async function main() {
 
     const sessionId = data.sessionId || data.session_id || "";
     const cwd = data.cwd || data.directory || "";
+
+    // Guard: skip sessions from the worker temp directory
+    if (cwd.includes("claude-rename-worker")) {
+      output();
+      return;
+    }
+
     if (data.stop_hook_active) {
       output();
       return;
