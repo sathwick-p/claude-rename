@@ -90,9 +90,12 @@ export function generateTitleViaCLI(prompt, model) {
     let stdout = "";
     let settled = false;
 
-    const child = spawn("claude", ["-p", "--model", model], {
+    // --bare disables hooks/LSP in the worker, preventing cascade loops.
+    // CLAUDE_RENAME_WORKER env var is a secondary guard checked by hook.mjs.
+    const child = spawn("claude", ["-p", "--bare", "--model", model], {
       cwd: WORKER_CWD,
       stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, CLAUDE_RENAME_WORKER: "1" },
     });
 
     const timer = setTimeout(() => {
